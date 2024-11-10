@@ -1,0 +1,461 @@
+npm install express mongoose axios body-parser
+
+const mongoose = require('mongoose');
+
+const productTransactionSchema = new mongoose.Schema({
+  id: Number,
+  title: String,
+  description: String,
+  price: Number,
+  dateOfSale: Date,
+  category: String,
+  sold: Boolean,
+});
+
+const ProductTransaction = mongoose.model('ProductTransaction', productTransactionSchema);
+
+const axios = require('axios');
+const ProductTransaction = require('./models/ProductTransaction'); // Assuming the model is in a 'models' folder
+
+// Fetch data from third-party API and initialize the database
+const seedDatabase = async () => {
+  try {
+    const response = await axios.get('https://s3.amazonaws.com/roxiler.com/product_transaction.json');
+    const data = response.data;
+    
+    // Clear existing records to prevent duplicates
+    await ProductTransaction.deleteMany();
+
+    // Insert new records
+    await ProductTransaction.insertMany(data);
+
+    console.log('Database seeded successfully');
+  } catch (error) {
+    console.error('Error seeding the database:', error);
+  }
+};
+
+// Call this function on server startup to initialize the database
+seedDatabase();
+
+app.get('/transactions', async (req, res) => {
+  const { page = 1, perPage = 10, search = '', month } = req.query;
+
+  let query = {};
+  if (search) {
+    query = {
+      $or: [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { price: { $regex: search, $options: 'i' } }
+      ]
+    };
+  }
+  
+  if (month) {
+    query.dateOfSale = {
+      $gte: new Date(`${month} 01`),
+      $lt: new Date(`${month} 31`),
+    };
+  }
+
+  const transactions = await ProductTransaction.find(query)
+    .skip((page - 1) * perPage)
+    .limit(parseInt(perPage));
+  
+  res.json(transactions);
+});
+
+app.get('/statistics', async (req, res) => {
+  const { month } = req.query;
+
+  const query = {
+    dateOfSale: {
+      $gte: new Date(`${month} 01`),
+      $lt: new Date(`${month} 31`),
+    }
+  };
+
+  const totalSaleAmount = await ProductTransaction.aggregate([
+    { $match: query },
+    { $group: { _id: null, totalAmount: { $sum: "$price" } } }
+  ]);
+
+  const totalSoldItems = await ProductTransaction.countDocuments({ ...query, sold: true });
+  const totalNotSoldItems = await ProductTransaction.countDocuments({ ...query, sold: false });
+
+  res.json({
+    totalSaleAmount: totalSaleAmount[0]?.totalAmount || 0,
+    totalSoldItems,
+    totalNotSoldItems
+  });
+});
+
+app.get('/price-range', async (req, res) => {
+  const { month } = req.query;
+
+  const query = {
+    dateOfSale: {
+      $gte: new Date(`${month} 01`),
+      $lt: new Date(`${month} 31`),
+    }
+  };
+
+  const priceRanges = [
+    { range: '0-100', min: 0, max: 100 },
+    { range: '101-200', min: 101, max: 200 },
+    { range: '201-300', min: 201, max: 300 },
+    { range: '301-400', min: 301, max: 400 },
+    { range: '401-500', min: 401, max: 500 },
+    { range: '501-600', min: 501, max: 600 },
+    { range: '601-700', min: 601, max: 700 },
+    { range: '701-800', min: 701, max: 800 },
+    { range: '801-900', min: 801, max: 900 },
+    { range: '901-above', min: 901 }
+  ];
+
+  const results = [];
+
+  for (let range of priceRanges) {
+    const count = await ProductTransaction.countDocuments({
+      ...query,
+      price: { $gte: range.min, ...(range.max && { $lte: range.max }) }
+    });
+    results.push({ range: range.range, count });
+  }
+
+  res.json(results);
+});
+
+app.get('/category-distribution', async (req, res) => {
+  const { month } = req.query;
+
+  const query = {
+    dateOfSale: {
+      $gte: new Date(`${month} 01`),
+      $lt: new Date(`${month} 31`),
+    }
+  };
+
+  const categories = await ProductTransaction.aggregate([
+    { $match: query },
+    { $group: { _id: "$category", count: { $sum: 1 } } }
+  ]);
+
+  res.json(categories.map(cat => ({ category: cat._id, items: cat.count })));
+});
+
+app.get('/combined-data', async (req, res) => {
+  const { month } = req.query;
+
+  const [statistics, priceRange, categoryDistribution] = await Promise.all([
+    axios.get(`/statistics?month=${month}`),
+    axios.get(`/price-range?month=${month}`),
+    axios.get(`/category-distribution?month=${month}`)
+  ]);
+
+  res.json({
+    statistics: statistics.data,
+    priceRange: priceRange.data,
+    categoryDistribution: categoryDistribution.data
+  });
+});
+
+const express = require('express');
+const app = express();
+const PORT = 3000;
+
+app.use(express.json());
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transactions Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Month Selection -->
+        <div class="controls">
+            <label for="month">Select Month:</label>
+            <select id="month">
+                <option value="January">January</option>
+                <option value="February">February</option>
+                <option value="March" selected>March</option>
+                <option value="April">April</option>
+                <option value="May">May</option>
+                <option value="June">June</option>
+                <option value="July">July</option>
+                <option value="August">August</option>
+                <option value="September">September</option>
+                <option value="October">October</option>
+                <option value="November">November</option>
+                <option value="December">December</option>
+            </select>
+
+            <input type="text" id="search" placeholder="Search transactions..." />
+        </div>
+
+        <!-- Transactions Table -->
+        <div class="table-container">
+            <table id="transactions-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Title</th>
+                        <th>Description</th>
+                        <th>Price</th>
+                        <th>Date of Sale</th>
+                        <th>Sold</th>
+                    </tr>
+                </thead>
+                <tbody id="transactions-body">
+                    <!-- Transactions will be dynamically inserted here -->
+                </tbody>
+            </table>
+
+            <!-- Pagination Controls -->
+            <div class="pagination">
+                <button id="prev-page">Previous</button>
+                <span id="current-page">1</span>
+                <button id="next-page">Next</button>
+            </div>
+        </div>
+
+        <!-- Statistics Section -->
+        <div class="statistics">
+            <div>Total Sale Amount: <span id="total-sale-amount"></span></div>
+            <div>Total Sold Items: <span id="total-sold-items"></span></div>
+            <div>Total Not Sold Items: <span id="total-not-sold-items"></span></div>
+        </div>
+
+        <!-- Bar Chart for Price Range -->
+        <div class="chart-container">
+            <canvas id="price-range-chart"></canvas>
+        </div>
+    </div>
+
+    <script src="scripts.js"></script>
+</body>
+</html>
+
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.controls {
+    margin-bottom: 20px;
+}
+
+.controls label {
+    margin-right: 10px;
+}
+
+.controls input {
+    margin-left: 10px;
+    padding: 5px;
+    width: 200px;
+}
+
+.table-container {
+    margin-bottom: 20px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+table, th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+}
+
+th {
+    background-color: #f2f2f2;
+}
+
+.pagination {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+}
+
+.statistics {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+
+.statistics div {
+    padding: 10px;
+    background-color: #fff;
+    border: 1px solid #ddd;
+    width: 30%;
+    text-align: center;
+}
+
+.chart-container {
+    width: 100%;
+    height: 400px;
+    background-color: white;
+    padding: 20px;
+    border: 1px solid #ddd;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const monthSelect = document.getElementById('month');
+    const searchInput = document.getElementById('search');
+    const transactionsBody = document.getElementById('transactions-body');
+    const totalSaleAmount = document.getElementById('total-sale-amount');
+    const totalSoldItems = document.getElementById('total-sold-items');
+    const totalNotSoldItems = document.getElementById('total-not-sold-items');
+    const currentPageDisplay = document.getElementById('current-page');
+    const prevPageButton = document.getElementById('prev-page');
+    const nextPageButton = document.getElementById('next-page');
+    const priceRangeChartCtx = document.getElementById('price-range-chart').getContext('2d');
+
+    let currentPage = 1;
+    let currentMonth = 'March';
+    let searchQuery = '';
+
+    // Initialize Chart.js Bar Chart
+    let priceRangeChart = new Chart(priceRangeChartCtx, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Number of Items',
+                data: [],
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderColor: 'rgba(75, 192, 192, 1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+
+    // Fetch and display transactions
+    async function fetchTransactions() {
+        try {
+            const response = await axios.get('/transactions', {
+                params: {
+                    month: currentMonth,
+                    page: currentPage,
+                    search: searchQuery
+                }
+            });
+
+            renderTransactions(response.data);
+        } catch (error) {
+            console.error('Error fetching transactions:', error);
+        }
+    }
+
+    // Render transactions in the table
+    function renderTransactions(transactions) {
+        transactionsBody.innerHTML = '';
+        transactions.forEach(transaction => {
+            const row = `<tr>
+                <td>${transaction.id}</td>
+                <td>${transaction.title}</td>
+                <td>${transaction.description}</td>
+                <td>${transaction.price}</td>
+                <td>${new Date(transaction.dateOfSale).toLocaleDateString()}</td>
+                <td>${transaction.sold ? 'Yes' : 'No'}</td>
+            </tr>`;
+            transactionsBody.insertAdjacentHTML('beforeend', row);
+        });
+    }
+
+    // Fetch and display statistics
+    async function fetchStatistics() {
+        try {
+            const response = await axios.get('/statistics', {
+                params: { month: currentMonth }
+            });
+
+            totalSaleAmount.textContent = response.data.totalSaleAmount;
+            totalSoldItems.textContent = response.data.totalSoldItems;
+            totalNotSoldItems.textContent = response.data.totalNotSoldItems;
+        } catch (error) {
+            console.error('Error fetching statistics:', error);
+        }
+    }
+
+    // Fetch and render bar chart data
+    async function fetchBarChartData() {
+        try {
+            const response = await axios.get('/price-range', {
+                params: { month: currentMonth }
+            });
+
+            const labels = response.data.map(range => range.range);
+            const data = response.data.map(range => range.count);
+
+            priceRangeChart.data.labels = labels;
+            priceRangeChart.data.datasets[0].data = data;
+            priceRangeChart.update();
+        } catch (error) {
+            console.error('Error fetching bar chart data:', error);
+        }
+    }
+
+    // Update page when month or search changes
+    monthSelect.addEventListener('change', function () {
+        currentMonth = this.value;
+        currentPage = 1;
+        fetchData();
+    });
+
+    searchInput.addEventListener('input', function () {
+        searchQuery = this.value;
+        currentPage = 1;
+        fetchTransactions();
+    });
+
+    // Pagination controls
+    prevPageButton.addEventListener('click', function () {
+        if (currentPage > 1) {
+            currentPage--;
+            currentPageDisplay.textContent = currentPage;
+            fetchTransactions();
+        }
+    });
+
+    nextPageButton.addEventListener('click', function () {
+        currentPage++;
+        currentPageDisplay.textContent = currentPage;
+        fetchTransactions();
+    });
+
+    // Fetch all data initially
+    function fetchData() {
+        fetchTransactions();
+        fetchStatistics();
+        fetchBarChartData();
+    }
+
+    fetchData(); // Initial fetch on page load
+});
